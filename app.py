@@ -7,7 +7,7 @@ import onnxruntime as ort
 st.set_page_config(page_title="Microscopic Cell Detector", layout="wide")
 
 # ---------- Model & Classes ----------
-MODEL_PATH = "best(three).onnx"
+MODEL_PATH = "best.onnx"
 CLASSES = ["RBC", "WBC", "Platelets"]        # Modify if different
 
 session = ort.InferenceSession(MODEL_PATH, providers=["CPUExecutionProvider"])
