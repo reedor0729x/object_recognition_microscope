@@ -1,58 +1,89 @@
 import streamlit as st
 import numpy as np
+import cv2
 from PIL import Image
 import onnxruntime as ort
 
-st.title("🧫 Microscopy Cell Detector (RBC / WBC / Platelets) - ONNX Runtime")
-st.write("Upload an image and adjust confidence threshold to detect cells.")
+st.set_page_config(page_title="Microscopic Cell Detector", layout="wide")
 
-# Confidence slider
-conf_threshold = st.slider("Confidence Threshold", 0.1, 1.0, 0.5, 0.05)
+# ---------- Model & Classes ----------
+MODEL_PATH = "best.onnx"
+CLASSES = ["RBC", "WBC", "Platelets"]   # change if different
 
-# Load ONNX model
-@st.cache_resource
-def load_model():
-    session = ort.InferenceSession("best.onnx", providers=["CPUExecutionProvider"])
-    return session
+session = ort.InferenceSession(MODEL_PATH, providers=["CPUExecutionProvider"])
 
-session = load_model()
 
-# File uploader
-uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
+def preprocess(img):
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img_resized = cv2.resize(img, (640, 640)) / 255.0
+    img_input = img_resized.transpose(2, 0, 1).astype(np.float32)
+    return img, np.expand_dims(img_input, axis=0)
+
+
+def postprocess(pred, input_image):
+    pred = pred.squeeze().T
+    boxes = pred[:, :4]
+    scores = pred[:, 4]
+    class_ids = pred[:, 5:].argmax(axis=1)
+    confidences = scores
+
+    # Filter predictions
+    mask = confidences > 0.5
+    boxes, confidences, class_ids = boxes[mask], confidences[mask], class_ids[mask]
+
+    # Convert xywh to xyxy
+    boxes_xyxy = np.zeros_like(boxes)
+    boxes_xyxy[:, 0] = boxes[:, 0] - boxes[:, 2] / 2
+    boxes_xyxy[:, 1] = boxes[:, 1] - boxes[:, 3] / 2
+    boxes_xyxy[:, 2] = boxes[:, 0] + boxes[:, 2] / 2
+    boxes_xyxy[:, 3] = boxes[:, 1] + boxes[:, 3] / 2
+
+    # scale to full image
+    h, w, _ = input_image.shape
+    boxes_xyxy[:, [0, 2]] *= w / 640
+    boxes_xyxy[:, [1, 3]] *= h / 640
+
+    return boxes_xyxy, confidences, class_ids
+
+
+def draw_boxes(image, boxes, class_ids, confs):
+    counts = {"RBC": 0, "WBC": 0, "Platelets": 0}
+    for box, class_id, conf in zip(boxes, class_ids, confs):
+        label = CLASSES[class_id]
+        counts[label] += 1
+
+        x1, y1, x2, y2 = map(int, box)
+        cv2.rectangle(image, (x1, y1), (x2, y2), (255, 0, 0), 2)
+        cv2.putText(image, f"{label} {conf:.2f}", (x1, y1 - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+    return image, counts
+
+
+# ---------- UI / Streamlit ----------
+st.title("🧪 Microscopic Tiny Cell Detector (ONNX)")
+uploaded_file = st.file_uploader("Upload microscopic image", type=["jpg", "jpeg", "png"])
 
 if uploaded_file:
-    img = Image.open(uploaded_file).convert("RGB")
-    st.image(img, caption="Uploaded Image", use_column_width=True)
+    pil_img = Image.open(uploaded_file)
+    img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
-    img_resized = img.resize((640, 640))
-    img_array = np.array(img_resized).astype(np.float32)
-    img_array = img_array.transpose(2, 0, 1) / 255.0
-    img_array = np.expand_dims(img_array, axis=0)
+    orig_img, input_tensor = preprocess(img)
 
-    outputs = session.run(None, {"images": img_array})
+    outputs = session.run(None, {"images": input_tensor})
+    boxes, confs, class_ids = postprocess(outputs[0], orig_img)
 
-    boxes = outputs[0]  # YOLO ONNX output: [x1, y1, x2, y2, score, class]
-    class_names = {0: "RBC", 1: "WBC", 2: "Platelets"}
+    result_img, counts = draw_boxes(orig_img, boxes, class_ids, confs)
 
-    counts = {"RBC": 0, "WBC": 0, "Platelets": 0}
+    col1, col2 = st.columns(2)
 
-    # Draw bounding boxes
-    img_draw = np.array(img_resized).copy()
+    with col1:
+        st.subheader("📥 Original Image")
+        st.image(pil_img, use_column_width=True)
 
-    for box in boxes:
-        x1, y1, x2, y2, score, cls = box
-        if score >= conf_threshold:
-            cls = int(cls)
-            name = class_names[cls]
-            counts[name] += 1
+    with col2:
+        st.subheader("📤 Processed Output")
+        st.image(result_img, channels="BGR", use_column_width=True)
 
-            # Draw rectangle
-            img_draw = cv2.rectangle(img_draw, (int(x1), int(y1)), (int(x2), int(y2)), (255, 0, 0), 2)
-            img_draw = cv2.putText(img_draw, f"{name} {score:.2f}", (int(x1), int(y1)-5),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-
-    st.image(img_draw, caption="Detection Result", use_column_width=True)
-
-    st.subheader("🧮 Cell Counts")
-    for k, v in counts.items():
-        st.write(f"**{k}** : {v}")
+    st.subheader("📊 Cell Counts")
+    st.write(counts)
