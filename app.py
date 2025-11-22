@@ -11,6 +11,21 @@ MODEL_PATH = "best.onnx"
 CLASSES = ["RBC", "WBC", "Platelets"]   # change if your class order is different
 
 # Load ONNX model
+# Print model input/output metadata
+input_name = session.get_inputs()[0].name
+output_name = session.get_outputs()[0].name
+
+input_shape = session.get_inputs()[0].shape
+output_shape = session.get_outputs()[0].shape
+
+st.write("🔌 Model Input Name:", input_name)
+st.write("📦 Model Input Shape:", input_shape)
+st.write("📦 Model Output Shape:", output_shape)
+st.write("🎯 Using input tensor shape:", input_tensor.shape)
+
+# Now safely attempt inference
+outputs = session.run([output_name], {input_name: input_tensor})
+pred = outputs[0][0]
 session = ort.InferenceSession(MODEL_PATH, providers=["CPUExecutionProvider"])
 
 
